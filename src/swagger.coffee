@@ -8,6 +8,7 @@ class SwaggerApi
   authorizations: null
   authorizationScheme: null
   info: null
+  alternativeSampleJSONFormat: false
 
   constructor: (url, options={}) ->
     # if url is a hash, assume only options were passed
@@ -25,6 +26,7 @@ class SwaggerApi
     @failure = if options.failure? then options.failure else ->
     @progress = if options.progress? then options.progress else ->
 
+    @alternativeSampleJSONFormat = options.alternativeSampleJSONFormat if options.alternativeSampleJSONFormat?
     # Build right away if a callback was passed to the initializer
     @build() if options.success?
 
@@ -354,7 +356,7 @@ class SwaggerResource
         # sanitize the nickname
         o.nickname = @sanitize o.nickname
 
-        op = new SwaggerOperation o.nickname, resource_path, method, o.parameters, o.summary, o.notes, type, responseMessages, this, consumes, produces
+        op = new SwaggerOperation o.nickname, resource_path, method, o.parameters, o.summary, o.notes, type, responseMessages, this, consumes, produces, @api.alternativeSampleJSONFormat
         @operations[op.nickname] = op
         @operationsArray.push op
 
@@ -435,6 +437,15 @@ class SwaggerModel
     modelsToIgnore.pop(@name);
     result
 
+  createJSONDoc: (modelsToIgnore) ->
+    result = {}
+    modelsToIgnore = modelsToIgnore || [];
+    modelsToIgnore.push(@name);
+    for prop in @properties
+      result[prop.name] = prop.getJSONDoc(modelsToIgnore)
+    modelsToIgnore.pop(@name);
+    result
+
 class SwaggerModelProperty
   constructor: (@name, obj) ->
     @dataType = obj.type || obj.dataType || obj["$ref"]
@@ -468,6 +479,16 @@ class SwaggerModelProperty
         result = @dataType
     if @isCollection then [result] else result
 
+  getJSONDoc: (modelsToIgnore) ->
+    if(@refModel? and (modelsToIgnore.indexOf(@refModel.name) is -1))
+      result = @refModel.createJSONDoc(modelsToIgnore)
+    else
+      if @isCollection
+        result = @refDataType
+      else
+        result = {type:@dataType, description:@descr}
+    if @isCollection then [result] else result
+
   toString: ->
     req = if @required then 'propReq' else 'propOpt'
 
@@ -486,7 +507,7 @@ class SwaggerModelProperty
 
 # SwaggerOperation converts an operation into a method which can be executed directly
 class SwaggerOperation
-  constructor: (@nickname, @path, @method, @parameters=[], @summary, @notes, @type, @responseMessages, @resource, @consumes, @produces) ->
+  constructor: (@nickname, @path, @method, @parameters=[], @summary, @notes, @type, @responseMessages, @resource, @consumes, @produces, @alternativeSampleJSONFormat=false) ->
     @resource.api.fail "SwaggerOperations must have a nickname." unless @nickname?
     @resource.api.fail "SwaggerOperation #{nickname} is missing path." unless @path?
     @resource.api.fail "SwaggerOperation #{nickname} is missing method." unless @method?
@@ -502,7 +523,10 @@ class SwaggerOperation
     if @type?
       # set the signature of response class
       @responseClassSignature = @getSignature(@type, @resource.models)
-      @responseSampleJSON = @getSampleJSON(@type, @resource.models)
+      if alternativeSampleJSONFormat
+        @responseSampleJSON = @getJSONDoc(@type, @resource.models)
+      else
+        @responseSampleJSON = @getSampleJSON(@type, @resource.models)
 
     @responseMessages = @responseMessages || []
 
@@ -517,7 +541,11 @@ class SwaggerOperation
         parameter.allowableValues.values = ["true", "false"]
 
       parameter.signature = @getSignature(type, @resource.models)
-      parameter.sampleJSON = @getSampleJSON(type, @resource.models)
+
+      if alternativeSampleJSONFormat
+        parameter.sampleJSON = @getJSONDoc(type, @resource.models)
+      else
+        parameter.sampleJSON = @getSampleJSON(type, @resource.models)
 
       if parameter.enum?
         parameter.isList = true
@@ -578,6 +606,21 @@ class SwaggerOperation
     isPrimitive = if ((listType? and models[listType]) or models[type]?) then false else true
 
     val = if (isPrimitive) then undefined else (if listType? then models[listType].createJSONSample() else models[type].createJSONSample())
+
+    # pretty printing obtained JSON
+    if val
+      # if container is list wrap it
+      val = if listType then [val] else val
+      JSON.stringify(val, null, 2)
+
+  getJSONDoc: (type, models) ->
+          # set listType if it exists
+    listType = @isListType(type)
+
+    # set flag which says if its primitive or not
+    isPrimitive = if ((listType? and models[listType]) or models[type]?) then false else true
+
+    val = if (isPrimitive) then undefined else (if listType? then models[listType].createJSONDoc() else models[type].createJSONDoc())
 
     # pretty printing obtained JSON
     if val
